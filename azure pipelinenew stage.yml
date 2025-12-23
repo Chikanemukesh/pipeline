@@ -5,7 +5,7 @@ stages:
   displayName: terraform init and plan 
   jobs: 
   - job: TerraformInitandPlan
-    displayName: terraform init and plan
+    displayName: terraform init and plans
     steps: 
     - task: TerraformTaskV4@4
       inputs:
