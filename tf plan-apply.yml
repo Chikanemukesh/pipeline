@@ -1,20 +1,191 @@
+trigger: none
 
-pool: self -agent
+parameters:
 
-trigger:
-- main
+- name: environment
+  displayName: environment
+  type: string
+  default: dev
+  values:
+  - dev
+  - prod
 
-steps:
-- task: TerraformTaskV4@4
-  inputs:
-    provider: 'azurerm'
-    command: 'init'
-    workingDirectory: '$(System.DefaultWorkingDirectory)/resourc'
-    backendServiceArm: 'connection service'
-    backendAzureRmResourceGroupName: 'skdmp'
-    backendAzureRmStorageAccountName: 'skdmpstg'
-    backendAzureRmContainerName: 'azcontainer'
-    backendAzureRmKey: 'tf/terraform.tfstate'
-- task: TerraformInstaller@1
-  inputs:
-    terraformVersion: 'latest'
+
+variables:
+
+- name: workingDirectory
+  value: '$(System.DefaultWorkingDirectory)/environment/${{ parameters.environment }}'
+
+
+pool:
+  name: selfhost
+
+
+stages:
+
+
+# =========================
+# Stage 1: Terraform Checks
+# =========================
+
+- stage: TerraformValidation
+  displayName: Terraform Validation Security Checks
+
+  jobs:
+
+  - job: TerraformChecks
+    displayName: TFLint Checkov Terratest
+
+    steps:
+
+    - task: TerraformInstaller@1
+      inputs:
+        terraformVersion: latest
+
+
+    - script: |
+        terraform fmt -check -recursive
+      displayName: Terraform Format Check
+
+
+    - task: TerraformTaskV4@4
+      displayName: Terraform Validate
+      inputs:
+        provider: azurerm
+        command: validate
+        workingDirectory: $(workingDirectory)
+
+
+    - script: |
+        curl -s https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+        tflint --init
+        tflint
+      displayName: Run TFLint
+
+
+    - script: |
+        pip install checkov
+        checkov -d $(workingDirectory)
+      displayName: Run Checkov Security Scan
+
+
+    - script: |
+        cd $(workingDirectory)/tests
+        go mod init test
+        go test -v
+      displayName: Run Terratest
+
+
+
+# =========================
+# Stage 2: Terraform Plan
+# =========================
+
+- stage: TerraformPlan
+
+  displayName: Terraform Init and Plan
+
+  dependsOn: TerraformValidation
+
+  jobs:
+
+  - job: TerraformInitPlan
+
+    displayName: Terraform Init Plan
+
+    steps:
+
+    - task: TerraformTaskV4@4
+      displayName: Terraform Init
+
+      inputs:
+        provider: azurerm
+        command: init
+        workingDirectory: $(workingDirectory)
+
+        backendServiceArm: my connection
+        backendAzureRmResourceGroupName: skdmp
+        backendAzureRmStorageAccountName: skdmpstg
+        backendAzureRmContainerName: azcontainer
+        backendAzureRmKey: tf/terraform.tfstate
+
+
+    - task: TerraformTaskV4@4
+      displayName: Terraform Plan
+
+      inputs:
+        provider: azurerm
+        command: plan
+        workingDirectory: $(workingDirectory)
+
+        environmentServiceNameAzureRM: my connection
+        commandOptions: '-out=tfplan'
+
+
+    - publish: $(workingDirectory)/tfplan
+      artifact: terraform-plan
+
+
+
+# =========================
+# Stage 3: Manual Approval
+# =========================
+
+- stage: Approval
+
+  displayName: Manual Approval
+
+  dependsOn: TerraformPlan
+
+  jobs:
+
+  - job: ManualApproval
+
+    displayName: Approval Gate
+
+    pool: server
+
+    steps:
+
+    - task: ManualValidation@1
+
+      inputs:
+        notifyUsers: 'abcd@abc.com'
+        instructions: 'Approve Terraform deployment'
+        onTimeout: reject
+
+
+
+# =========================
+# Stage 4: Terraform Apply
+# =========================
+
+- stage: TerraformApply
+
+  displayName: Terraform Apply
+
+  dependsOn: Approval
+
+  jobs:
+
+  - job: ApplyTerraform
+
+    displayName: Terraform Apply
+
+    steps:
+
+    - download: current
+      artifact: terraform-plan
+
+
+    - task: TerraformTaskV4@4
+
+      displayName: Terraform Apply
+
+      inputs:
+        provider: azurerm
+        command: apply
+        workingDirectory: $(workingDirectory)
+
+        environmentServiceNameAzureRM: my connection
+        commandOptions: tfplan
