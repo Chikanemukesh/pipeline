@@ -8,7 +8,7 @@ parameters:
     - prod
 variables:
     workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
-pool: karishma
+pool: selfhost
 trigger:
   # batch: true
   # branches:
