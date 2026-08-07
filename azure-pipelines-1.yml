@@ -1,31 +1,114 @@
-pool: karishma
 trigger: none
-steps:
-- task: TerraformInstaller@1
-  inputs:
-    terraformVersion: 'latest'
-- task: TerraformTaskV4@4
-  inputs:
-    provider: 'azurerm'
-    command: 'init'
-    workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
-    backendServiceArm: 'my connection'
-    backendAzureRmResourceGroupName: 'skdmp'
-    backendAzureRmStorageAccountName: 'skdmpstg'
-    backendAzureRmContainerName: 'azcontainer'
-    backendAzureRmKey: 'tf/terraform.tfstate'
-- task: TerraformTaskV4@4
-  inputs:
-    provider: 'azurerm'
-    command: 'init'
-    workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
-    backendServiceArm: 'my connection'
-    backendAzureRmResourceGroupName: 'skdmp'
-    backendAzureRmStorageAccountName: 'skdmpstg'
-    backendAzureRmContainerName: 'azcontainer'
-    backendAzureRmKey: 'tf/terraform.tfstate'
-- task: TerraformTaskV4@4
-  inputs:
-    provider: 'azurerm'
-    command: 'validate'
-    workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+
+pr: none
+
+parameters:
+- name: environment
+  displayName: "Deployment Environment"
+  type: string
+  default: dev
+  values:
+  - dev
+  - qa
+  - prod
+- name: terraformVersion
+  displayName: "Terraform Version"
+  type: string
+  default: latest
+- name: serviceConnection
+  displayName: "Azure Service Connection"
+  type: string
+  default: my connection
+variables:
+- group: terraform-variable-group
+- name: workingDirectory
+  value: '$(System.DefaultWorkingDirectory)/environment/${{ parameters.environment }}'
+
+pool:
+  name: selfhost
+  demands:
+  - agent.name -equals terraform-agent
+stages:
+
+# Stage 1 : Terraform Init
+
+- stage: Init
+  displayName: "Terraform Init"
+  jobs:
+  - job: Terraform_Init
+    displayName: "Terraform Init Job"
+    steps:
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: ${{ parameters.terraformVersion }}
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Init"
+      inputs:
+        provider: azurerm
+        command: init
+        workingDirectory: $(workingDirectory)
+        backendServiceArm: ${{ parameters.serviceConnection }}
+        backendAzureRmResourceGroupName: skdmp
+        backendAzureRmStorageAccountName: skdmpstg
+        backendAzureRmContainerName: azcontainer
+        backendAzureRmKey: tf/terraform.tfstate
+
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Validate"
+      inputs:
+        provider: azurerm
+        command: validate
+        workingDirectory: $(workingDirectory)
+
+# Stage 2 : Terraform Plan
+
+- stage: Plan
+  displayName: "Terraform Plan"
+  dependsOn: Init
+  jobs:
+  - job: Terraform_Plan
+    displayName: "Terraform Plan Job"
+    steps:
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: ${{ parameters.terraformVersion }}
+
+    - task: TerraformTaskV4@4
+      displayName: "Terraform Plan"
+      inputs:
+        provider: azurerm
+        command: plan
+        workingDirectory: $(workingDirectory)
+        environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+        commandOptions: '-out=tfplan'
+    - publish: $(workingDirectory)/tfplan
+      artifact: terraform-plan
+# Stage 3 : Approval + Apply
+
+- stage: Apply
+  displayName: "Terraform Apply"
+  dependsOn: Plan
+  jobs:
+  - deployment: Terraform_Apply
+    displayName: "Terraform Apply Deployment"
+    environment: terraform-production
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: terraform-plan
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: ${{ parameters.terraformVersion }}
+          - task: TerraformTaskV4@4
+            displayName: "Terraform Apply"
+            inputs:
+              provider: azurerm
+              command: apply
+              workingDirectory: $(workingDirectory)
+              environmentServiceNameAzureRM: ${{ parameters.serviceConnection }}
+              commandOptions: tfplan
