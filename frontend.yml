@@ -42,7 +42,6 @@ stages:
             buildType: 'current'
             artifactName: 'myartifact'
             targetPath: '$(Build.StagingDirectory)'
-
         - task: SSH@0
           inputs:
             sshEndpoint: 'vmconnection'
